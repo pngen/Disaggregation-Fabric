@@ -168,7 +168,10 @@ a real OS kill plus a retained and verified process handle.
 ## Build
 
 Requires CMake 3.22+, a C++20 compiler (MSVC 19.44 or later), and on Windows the
-MSVC toolchain. CUDA 12.9+ is needed only for the real CUDA proof.
+MSVC toolchain. CUDA 12.9+ is needed only for the real CUDA proof, which is built in Release
+configurations (the nvcc host compiler links the MSVC dynamic runtime, which is
+validated in Release; Debug builds run the full C++ test suite without the CUDA
+proof).
 
     cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
     cmake --build build

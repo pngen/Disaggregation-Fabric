@@ -97,6 +97,7 @@ endif()
 # Real CUDA proof: compile the .cu directly with nvcc and link the MSVC-built libs.
 find_program(CUDA_NVCC nvcc PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA")
 if(CUDA_NVCC)
+  if(NOT ${CMAKE_BUILD_TYPE} STREQUAL "Debug")
   set(CUDA_EXE ${CMAKE_BINARY_DIR}/t_cuda.exe)
   set(NVCC_HOST "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64")
   add_custom_command(
@@ -110,6 +111,7 @@ if(CUDA_NVCC)
   )
   add_custom_target(t_cuda ALL DEPENDS ${CUDA_EXE})
   add_test(NAME cuda COMMAND ${CUDA_EXE})
+  endif()
 endif()
 # --- install / package -----------------------------------------------------
 include(GNUInstallDirs)
