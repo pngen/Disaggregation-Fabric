@@ -1,0 +1,12 @@
+Disaggregation Fabric
+Copyright 2026 Summon Software Labs
+
+This product is licensed under the Apache License, Version 2.0 (the "License");
+you may not use this product except in compliance with the License.
+
+POLICY: NO TELEMETRY TRANSMISSION.
+This software intentionally transmits no telemetry. It does not phone home,
+report usage, collect metrics, or communicate with any external service.
+
+This product includes software developed by the OpenSSL Project where present,
+and third-party components retain their own notices as required by their licenses.

@@ -1,0 +1,29 @@
+# Build trees
+build/
+build_asan/
+build-*/
+
+# Validation artifacts
+_install_prefix/
+_consumer_scratch/
+_clone_*/
+
+# Transient / debug
+_env*.cmd
+_build_env.cmd
+_scratch*
+_scratch_test.txt
+*.tmp
+*.out
+*.bin
+_system_real.tmp
+
+# Compiler / IDE
+.vs/
+*.pdb
+*.ilk
+CMakeCache.txt
+CMakeFiles/
+
+# Git
+.git/

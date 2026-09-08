@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.22)
+project(disaggregation_fabric_consumer LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(DisaggregationFabric CONFIG REQUIRED)
+add_executable(consumer main.cpp)
+target_link_libraries(consumer PRIVATE DisaggregationFabric::core DisaggregationFabric::synthetic)
