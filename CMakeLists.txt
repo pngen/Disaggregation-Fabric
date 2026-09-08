@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 project(DisaggregationFabric VERSION 1.0.0 LANGUAGES CXX)
 
+include(GNUInstallDirs)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -114,7 +116,6 @@ if(CUDA_NVCC)
   endif()
 endif()
 # --- install / package -----------------------------------------------------
-include(GNUInstallDirs)
 install(TARGETS disaggregation_fabric_core disaggregation_fabric_system disaggregation_fabric_synthetic
         EXPORT DisaggregationFabricTargets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
