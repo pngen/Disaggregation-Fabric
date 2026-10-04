@@ -29,7 +29,7 @@ reservation, guarded lifecycle, authority binding, fencing, failure-domain
 constraints, partial-resource failure, recomposition, drain, persistence, and
 inspection.
 
-It does **not** own general workload scheduling, Resource Broker's global
+It does **not** own general workload scheduling, [Resource Broker](https://github.com/pngen/Resource-Broker)'s global
 arbitration, Memory Expansion Fabric's generic expanded-memory capacity semantics,
 CXL discovery, Near-Memory Compute placement, Transfer Fabric byte movement,
 Communication Planner path construction, Fabric Scheduler placement, GPU Memory
