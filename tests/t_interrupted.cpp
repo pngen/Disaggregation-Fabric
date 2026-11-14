@@ -48,6 +48,7 @@ static CompositionRequest MakeReq() {
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0); std::setvbuf(stderr, nullptr, _IONBF, 0);
   int port = 55320; std::string statePath = "_interrupt_state.bin";
+  std::remove(statePath.c_str());   // start from no durable state (a rerun must not load the last run's)
   char exeBuf[MAX_PATH]; GetModuleFileNameA(nullptr, exeBuf, MAX_PATH);
   char fullBuf[MAX_PATH]; GetFullPathNameA(exeBuf, MAX_PATH, fullBuf, nullptr);
   std::string exeDir = std::string(fullBuf).substr(0, std::string(fullBuf).find_last_of("\\"));

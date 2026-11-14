@@ -66,6 +66,7 @@ int main() {
   std::string coord = exeDir + "\\dsh_coordinator.exe";
   std::string worker = exeDir + "\\dsh_worker.exe";
   std::string statePath = "_workerdeath_state.bin";
+  std::remove(statePath.c_str());   // start from no durable state (a rerun must not load the last run's)
   std::string markdir = "_workerdeath_mark";
   (void)markdir;
 

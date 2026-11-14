@@ -89,7 +89,9 @@ class ServerSocket {
     if (s_ == INVALID_SOCKET) return false;
     int one = 1; setsockopt(s_, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof(one));
     struct sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(static_cast<u_short>(port));
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    // Loopback only: the reference deployment is single-host and its control plane is
+    // unauthenticated.
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (::bind(s_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) return false;
     if (::listen(s_, 16) == SOCKET_ERROR) return false;
     u_long nb = 1; ioctlsocket(s_, FIONBIO, &nb);

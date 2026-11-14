@@ -275,12 +275,24 @@ AuthorityTuple MakeAuthority(CompositionGeneration gen, const CompositionRequest
   return a;
 }
 
+// The request's policy generation is still the current one (a policy never updated has no
+// newer generation).
+bool PolicyCurrent(const CompositionRequest& req, const AuthorityTuple& a,
+                   const std::map<PolicyId, PolicyGeneration>& policies) {
+  if (!req.policy.IsValid()) return true;
+  auto it = policies.find(req.policy);
+  return it == policies.end() || it->second == a.policy_generation;
+}
+
 bool RevalidationHolds(const Composition& c, const ResourceMap& resources, const NodeMap& nodes,
-                       const PathMap& paths, CoordinatorEpoch epoch,
+                       const PathMap& paths, const std::map<PolicyId, PolicyGeneration>& policies,
+                       CoordinatorEpoch epoch,
                        std::vector<RejectionReason>& out, std::vector<std::string>& notes) {
   out.clear(); notes.clear();
-  (void)nodes; (void)paths;
   if (c.authority.coordinator_epoch != epoch) { out.push_back(RejectionReason::WRONG_EPOCH); notes.push_back("epoch mismatch"); return false; }
+  if (!PolicyCurrent(c.request, c.authority, policies)) { out.push_back(RejectionReason::POLICY_DENIED); notes.push_back("policy generation changed"); return false; }
+  // Cross-node paths must still be verified, available and within the request's bounds.
+  if (!ValidateGraph(c.request, c.graph, resources, nodes, paths, out, notes)) return false;
   for (std::size_t i = 0; i < c.graph.vertices.size(); ++i) {
     ResourceId rid = c.graph.vertices[i];
     auto it = resources.find(rid);
@@ -337,6 +349,7 @@ std::string CanonicalKey(const std::vector<Resource>& set) {
 struct FabricEngine::Impl {
   EngineConfig config;
   mutable std::mutex mu;
+  mutable std::mutex save_mu;   // saves are serialized, so the newest snapshot is written last
   ResourceMap resources;
   NodeMap nodes;
   std::vector<BackendPtr> backends;
@@ -396,6 +409,19 @@ std::vector<std::vector<ResourceId>> EnumerateSelections(const std::vector<Resou
     }
   }
   return out;
+}
+
+// Returns a reservation's exclusive holds once: only a reservation that still holds them
+// (PROVISIONAL or COMMITTED) releases anything, so a rolled-back or released reservation
+// can never take away holds that now belong to another composition.
+bool ReleaseHolds(std::map<ResourceId, double>& reserved, Reservation& resv, ReservationState next) {
+  if (resv.state != ReservationState::PROVISIONAL && resv.state != ReservationState::COMMITTED) return false;
+  for (auto& item : resv.items) {
+    auto hit = reserved.find(item.resource);
+    if (hit != reserved.end()) { double nv = hit->second - item.reserved_amount; hit->second = (nv < 0.0 ? 0.0 : nv); if (hit->second == 0.0) reserved.erase(hit); }
+  }
+  resv.state = next;
+  return true;
 }
 
 // Amount to hold for a resource in a reservation (exclusive semantics).
@@ -543,6 +569,7 @@ void FabricEngine::MarkEvidenceRevalidationRequired(WorkerBootId owner) {
 void FabricEngine::AdvanceEpoch(CoordinatorEpoch next) {
   if (!next.IsValid()) return;
   std::lock_guard<std::mutex> lk(impl_->mu);
+  if (next.Value() <= impl_->config.epoch.Value()) return;   // epochs only move forward
   impl_->config.epoch = next;
   for (auto& kv : impl_->resources) {
     if (!kv.second.evidence.durable) { kv.second.evidence.state = EvidenceState::REVALIDATION_REQUIRED; kv.second.evidence.max_age_ms = 0; }
@@ -778,6 +805,28 @@ ReserveResult FabricEngine::Reserve(const CompositionPlan& plan) {
   result.outcome = CompositionOutcome::REJECTED;
   if (plan.lifecycle != CompositionLifecycle::PLANNED) { result.reasons.push_back(RejectionReason::INVALID_STATE_TRANSITION); result.notes.push_back("plan not PLANNED"); return result; }
   if (!plan.id.IsValid()) { result.reasons.push_back(RejectionReason::INVALID_STATE_TRANSITION); result.notes.push_back("plan has zero id"); return result; }
+  // The plan must still describe current authority: a fresh composition id, this epoch, the
+  // members' current generations and policy, and a graph whose paths and failure domains
+  // still validate.
+  if (impl_->compositions.count(plan.id)) { result.reasons.push_back(RejectionReason::DUPLICATE_RESERVATION); result.notes.push_back("composition id already reserved"); return result; }
+  if (plan.authority.coordinator_epoch != impl_->config.epoch) { result.reasons.push_back(RejectionReason::WRONG_EPOCH); result.notes.push_back("plan from another epoch"); return result; }
+  if (!PolicyCurrent(plan.request, plan.authority, impl_->policies)) { result.reasons.push_back(RejectionReason::POLICY_DENIED); result.notes.push_back("policy generation changed"); return result; }
+  {
+    std::vector<Resource> members;
+    for (std::size_t i = 0; i < plan.graph.vertices.size(); ++i) {
+      auto it = impl_->resources.find(plan.graph.vertices[i]);
+      if (it == impl_->resources.end()) { result.reasons.push_back(RejectionReason::RESOURCE_OFFLINE); result.notes.push_back("member missing " + plan.graph.vertices[i].ToString()); return result; }
+      if (i >= plan.authority.resource_generations.size() || plan.authority.resource_generations[i] != it->second.generation) {
+        result.reasons.push_back(RejectionReason::WRONG_RESOURCE_GENERATION); result.notes.push_back("member generation changed " + it->first.ToString()); return result;
+      }
+      members.push_back(it->second);
+    }
+    std::vector<RejectionReason> vr; std::vector<std::string> vn;
+    if (!ValidateGraph(plan.request, plan.graph, impl_->resources, impl_->nodes, impl_->paths, vr, vn) ||
+        !ValidateFailureDomains(members, impl_->nodes, plan.request, vr, vn)) {
+      result.reasons = vr; result.notes = vn; return result;
+    }
+  }
 
   Reservation resv;
   resv.id = ReservationId(impl_->next_resv++);
@@ -838,7 +887,7 @@ RevalidateResult FabricEngine::Revalidate(const Composition& c) const {
   std::lock_guard<std::mutex> lk(impl_->mu);
   RevalidateResult r;
   std::vector<RejectionReason> rr; std::vector<std::string> nn;
-  r.valid = RevalidationHolds(c, impl_->resources, impl_->nodes, impl_->paths, impl_->config.epoch, rr, nn);
+  r.valid = RevalidationHolds(c, impl_->resources, impl_->nodes, impl_->paths, impl_->policies, impl_->config.epoch, rr, nn);
   r.reasons = rr;
   r.notes = nn;
   return r;
@@ -858,11 +907,7 @@ CommitResult FabricEngine::Commit(const Reservation& resIn) {
   if (comp.lifecycle != CompositionLifecycle::RESERVED) { result.reasons.push_back(RejectionReason::INVALID_STATE_TRANSITION); result.notes.push_back("composition not RESERVED"); return result; }
 
   auto rollback = [&](RejectionReason reason) -> CommitResult {
-    for (auto& item : resv.items) {
-      auto hit = impl_->reserved_amount.find(item.resource);
-      if (hit != impl_->reserved_amount.end()) { double nv = hit->second - item.reserved_amount; hit->second = (nv < 0.0 ? 0.0 : nv); if (hit->second == 0.0) impl_->reserved_amount.erase(hit); }
-    }
-    resv.state = ReservationState::ROLLED_BACK;
+    ReleaseHolds(impl_->reserved_amount, resv, ReservationState::ROLLED_BACK);
     comp.lifecycle = CompositionLifecycle::REVALIDATION_REQUIRED;
     comp.outcome = CompositionOutcome::FAILED;
     result.outcome = CompositionOutcome::REJECTED;
@@ -898,7 +943,7 @@ ActivateResult FabricEngine::Activate(CompositionId id) {
   if (comp.lifecycle != CompositionLifecycle::COMMITTED) { result.reasons.push_back(RejectionReason::INVALID_STATE_TRANSITION); result.notes.push_back("composition not COMMITTED"); return result; }
   if (impl_->fenced.count(comp.id)) { result.reasons.push_back(RejectionReason::POLICY_DENIED); result.notes.push_back("composition fenced"); return result; }
   std::vector<RejectionReason> rr; std::vector<std::string> nn;
-  if (!RevalidationHolds(comp, impl_->resources, impl_->nodes, impl_->paths, impl_->config.epoch, rr, nn)) {
+  if (!RevalidationHolds(comp, impl_->resources, impl_->nodes, impl_->paths, impl_->policies, impl_->config.epoch, rr, nn)) {
     comp.lifecycle = CompositionLifecycle::REVALIDATION_REQUIRED;
     comp.outcome = CompositionOutcome::REJECTED;
     result.reasons = rr;
@@ -984,13 +1029,7 @@ bool FabricEngine::EndDrain(CompositionId id) {
   Composition& c = cit->second;
   if (c.lifecycle != CompositionLifecycle::DRAINING) return false;
   auto rit = impl_->reservations.find(c.reservation);
-  if (rit != impl_->reservations.end()) {
-    for (auto& item : rit->second.items) {
-      auto hit = impl_->reserved_amount.find(item.resource);
-      if (hit != impl_->reserved_amount.end()) { double nv = hit->second - item.reserved_amount; hit->second = (nv < 0.0 ? 0.0 : nv); if (hit->second == 0.0) impl_->reserved_amount.erase(hit); }
-    }
-    rit->second.state = ReservationState::RELEASED;
-  }
+  if (rit != impl_->reservations.end()) ReleaseHolds(impl_->reserved_amount, rit->second, ReservationState::RELEASED);
   c.lifecycle = CompositionLifecycle::RELEASED;
   impl_->draining.erase(id);
   return true;
@@ -1017,13 +1056,7 @@ bool FabricEngine::Recompute(CompositionId id) {
     if (cit != impl_->compositions.end()) {
       Composition& oldc = cit->second;
       auto rit = impl_->reservations.find(oldc.reservation);
-      if (rit != impl_->reservations.end()) {
-        for (auto& item : rit->second.items) {
-          auto hit = impl_->reserved_amount.find(item.resource);
-          if (hit != impl_->reserved_amount.end()) { double nv = hit->second - item.reserved_amount; hit->second = (nv < 0.0 ? 0.0 : nv); if (hit->second == 0.0) impl_->reserved_amount.erase(hit); }
-        }
-        rit->second.state = ReservationState::RELEASED;
-      }
+      if (rit != impl_->reservations.end()) ReleaseHolds(impl_->reserved_amount, rit->second, ReservationState::RELEASED);
       oldc.lifecycle = CompositionLifecycle::RELEASED;
       impl_->fenced.insert(oldc.id);
     }
@@ -1040,6 +1073,7 @@ bool FabricEngine::Recompute(CompositionId id) {
 // --- persistence ---------------------------------------------------------
 
 bool FabricEngine::Save(const std::string& path) const {
+  std::lock_guard<std::mutex> sl(impl_->save_mu);
   persist::DurableState state;
   {
     std::lock_guard<std::mutex> lk(impl_->mu);
@@ -1095,12 +1129,7 @@ bool FabricEngine::Release(CompositionId id) {
   Composition& c = cit->second;
   if (c.lifecycle == CompositionLifecycle::RELEASED || c.lifecycle == CompositionLifecycle::RETIRED) return false;
   auto rit = impl_->reservations.find(c.reservation);
-  if (rit != impl_->reservations.end()) {
-    for (auto& item : rit->second.items) {
-      auto hit = impl_->reserved_amount.find(item.resource);
-      if (hit != impl_->reserved_amount.end()) { double nv = hit->second - item.reserved_amount; hit->second = (nv < 0.0 ? 0.0 : nv); if (hit->second == 0.0) impl_->reserved_amount.erase(hit); }
-    }    rit->second.state = ReservationState::RELEASED;
-  }
+  if (rit != impl_->reservations.end()) ReleaseHolds(impl_->reserved_amount, rit->second, ReservationState::RELEASED);
   c.lifecycle = CompositionLifecycle::RELEASED;
   impl_->draining.erase(id);
   impl_->fenced.insert(id);

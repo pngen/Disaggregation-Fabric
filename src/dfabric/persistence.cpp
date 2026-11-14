@@ -1,7 +1,10 @@
 // Disaggregation Fabric — persistence codec (versioned, integrity-checked).
 #include "dfabric/persistence.hpp"
+#include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <cstring>
+#include <system_error>
 #include <vector>
 #include <cstdint>
 
@@ -393,27 +396,19 @@ bool SaveImpl(const DurableState& s, const std::string& path, std::string& err) 
     for (const auto& c : s.compositions) WriteComposition(w, c);
     w.U64(Checksum(w.buf.data(), w.buf.size()));
 
-    // Atomic replacement: write to a temp file, then move.
+    // Atomic replacement: write a complete temp file, then rename it over the state file, so
+    // the state file is always either the previous or the new complete version.
     std::string tmp = path + ".tmp";
-    std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
-    if (!ofs) { err = "cannot open temp path for write"; return false; }
-    ofs.write(reinterpret_cast<const char*>(w.buf.data()), static_cast<std::streamsize>(w.buf.size()));
-    ofs.close();
-    if (!ofs.good()) { err = "write failed"; return false; }
-#ifdef _WIN32
-    std::remove(path.c_str());
-#endif
-    std::ifstream ifs(tmp, std::ios::binary);
-    std::ofstream ofs2(path, std::ios::binary | std::ios::trunc);
-    if (!ofs2) { err = "cannot open final path"; return false; }
-    ifs.seekg(0, std::ios::end); std::streamsize sz = ifs.tellg(); ifs.seekg(0);
-    std::vector<char> b(static_cast<std::size_t>(sz));
-    ifs.read(b.data(), sz);
-    ofs2.write(b.data(), static_cast<std::streamsize>(b.size()));
-    ofs2.close();
-#ifdef _WIN32
-    std::remove(tmp.c_str());
-#endif
+    {
+      std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
+      if (!ofs) { err = "cannot open temp path for write"; return false; }
+      ofs.write(reinterpret_cast<const char*>(w.buf.data()), static_cast<std::streamsize>(w.buf.size()));
+      ofs.flush();
+      if (!ofs.good()) { ofs.close(); std::remove(tmp.c_str()); err = "write failed"; return false; }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) { std::remove(tmp.c_str()); err = "replace failed: " + ec.message(); return false; }
     return true;
   } catch (const std::exception& e) { err = e.what(); return false; }
 }

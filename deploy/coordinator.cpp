@@ -75,7 +75,9 @@ int main(int argc, char** argv) {
   if (std::ifstream(statePath).good()) {
     LoadResult lr = engine.Load(statePath);
     if (!lr.ok) std::fprintf(stderr, "coordinator: load warning: %s\n", lr.error.c_str());
-    engine.AdvanceEpoch(CoordinatorEpoch(epochVal));
+    // A restart always moves past the recovered epoch, whatever --epoch says.
+    const std::uint64_t recovered = engine.epoch().Value();
+    engine.AdvanceEpoch(CoordinatorEpoch(lr.ok && epochVal <= recovered ? recovered + 1 : epochVal));
   } else {
     engine.AdvanceEpoch(CoordinatorEpoch(epochVal));
   }
